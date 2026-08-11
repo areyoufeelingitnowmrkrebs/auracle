@@ -1,0 +1,10 @@
+{
+    "KPlugin": {
+        "Id": "io.github.areyoufeelingitnowmrkrebs.auracle",
+        "Name": "Auracle",
+        "Description": "Raining code animation with a colorful twist.",
+        "License": "GPL-2.0+"
+    },
+    "KPackageStructure": "Plasma/Wallpaper",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
