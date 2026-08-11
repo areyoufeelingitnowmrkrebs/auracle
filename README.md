@@ -2,7 +2,7 @@
 A raining code wallpaper plugin for KDE Plasma with a diagonal rainbow gradient.
 
 ## Screenshot
-
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/81fe7c1a-f946-4bd6-a76f-6d1e458e8add" />
 
 ## Install
 1. Download and relocate:
