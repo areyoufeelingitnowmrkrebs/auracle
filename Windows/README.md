@@ -1,13 +1,11 @@
 # Windows
-To run Auracle on Windows, you'll need **Lively Wallpapers** installed.
-
-It is available in the Microsoft Store.
+To run Auracle on Windows, you'll need [Lively Wallpaper](https://apps.microsoft.com/detail/9NTM2QC6QWS7?hl=en-us&gl=US&ocid=pdpshare) installed.
 
 ## Install
-1. Click [here](https://github.com/areyoufeelingitnowmrkrebs/auracle/archive/refs/heads/main.zip) to download a zip of this repo.
-2. Extract the downloaded zip.
+1. Download a .zip of this repo by clicking [here](https://github.com/areyoufeelingitnowmrkrebs/auracle/archive/refs/heads/main.zip).
+2. Extract `auracle-main.zip`.
 3. Open Lively and click the `+` icon.
-4. Click `Browse`.
-5. Navigate to the folder you extracted, then to the `Windows\Auracle`.
+4. Click `Choose a file`.
+5. Navigate to the folder you extracted, then to `auracle-main\auracle-main\Windows\Auracle`.
 6. Click `Auracle.html`.
-7. Click `Okay`.
+7. Click `OK`.
