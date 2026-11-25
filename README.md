@@ -1,5 +1,5 @@
 # Auracle
-A colorful "raining code" wallpaper for Android, Windows, and KDE Plasma.
+A colorful "raining code" wallpaper for Android, KDE Plasma, and Windows.
 
 ## Install
 > working on it
