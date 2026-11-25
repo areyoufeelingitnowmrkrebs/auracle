@@ -84,4 +84,21 @@ class AuracleMatrixSimulationTest {
         assertEquals(19.8f, minTrailCells, 0.01f)
         assertEquals(39.6f, maxTrailCells, 0.01f)
     }
+
+    @Test
+    fun `non-finite and zero dtMillis values are handled safely`() {
+        val sim = AuracleMatrixSimulation(Random(99))
+        sim.resize(widthPx = 140, heightPx = 140, cellSizePx = 14f)
+
+        // Zero dt redraws current state without advancing simulation
+        sim.stepAndRender(0f) { _, _, _, _, _ -> }
+        assertEquals(0f, sim.hue, 0.0001f)
+
+        // NaN and Infinity clamp to 16ms -> hue advances by 0.48 each
+        sim.stepAndRender(Float.NaN) { _, _, _, _, _ -> }
+        assertEquals(0.48f, sim.hue, 0.001f)
+
+        sim.stepAndRender(Float.POSITIVE_INFINITY) { _, _, _, _, _ -> }
+        assertEquals(0.96f, sim.hue, 0.001f)
+    }
 }

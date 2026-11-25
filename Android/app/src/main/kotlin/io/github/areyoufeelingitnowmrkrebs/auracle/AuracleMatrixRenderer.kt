@@ -15,13 +15,13 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * Renders [AuracleMatrixSimulation] onto an Android [Canvas] using a precomputed ARGB color cache
- * and a pre-rendered [Bitmap.Config.ALPHA_8] glyph atlas.
+ * Renders [AuracleMatrixSimulation] onto an Android [Canvas] using a shared precomputed ARGB color
+ * cache and a pre-rendered [Bitmap.Config.ALPHA_8] glyph atlas.
  */
 internal class AuracleMatrixRenderer(
     displayMetrics: DisplayMetrics,
 ) {
-    private val cellSizePx: Float = BASE_FONT_SIZE_DP * displayMetrics.density
+    private val cellSizePx: Float = (BASE_FONT_SIZE_DP * displayMetrics.density).coerceAtLeast(1f)
     private val simulation = AuracleMatrixSimulation()
 
     private val drawPaint = Paint().apply {
@@ -29,7 +29,6 @@ internal class AuracleMatrixRenderer(
         isFilterBitmap = true
     }
 
-    private val colorCache: IntArray = buildColorCache()
     private val glyphAtlas: GlyphAtlas = buildGlyphAtlas(cellSizePx)
     private val dstRect = RectF()
 
@@ -38,11 +37,14 @@ internal class AuracleMatrixRenderer(
     }
 
     fun draw(canvas: Canvas, dtMillis: Float) {
+        val atlasBitmap = glyphAtlas.bitmap
+        if (atlasBitmap.isRecycled) return
+
         canvas.drawColor(Color.BLACK)
 
+        val colors = COLOR_CACHE
         val alphaStride = AuracleMatrixSimulation.ALPHA_STEPS + 1
         val srcRects = glyphAtlas.srcRects
-        val atlasBitmap = glyphAtlas.bitmap
         val offsetX = glyphAtlas.drawOffsetX
         val offsetY = glyphAtlas.drawOffsetY
         val tileW = glyphAtlas.tileWidth.toFloat()
@@ -52,7 +54,9 @@ internal class AuracleMatrixRenderer(
         var hasLastColor = false
 
         simulation.stepAndRender(dtMillis) { charIndex, hue, alphaIndex, xPx, yPx ->
-            val nextColor = colorCache[hue * alphaStride + alphaIndex]
+            if (alphaIndex <= 0) return@stepAndRender
+
+            val nextColor = colors[hue * alphaStride + alphaIndex]
             if (!hasLastColor || nextColor != lastColor) {
                 drawPaint.color = nextColor
                 lastColor = nextColor
@@ -147,24 +151,6 @@ internal class AuracleMatrixRenderer(
         )
     }
 
-    private fun buildColorCache(): IntArray {
-        val alphaCount = AuracleMatrixSimulation.ALPHA_STEPS + 1
-        val cache = IntArray(AuracleMatrixSimulation.HUE_DEGREES * alphaCount)
-        val hsv = floatArrayOf(0f, 1f, 1f)
-
-        // hsla(h, 100%, 50%, a / 20.0) is equivalent to HSV(h, 1.0, 1.0) with alpha a / 20.0
-        for (h in 0 until AuracleMatrixSimulation.HUE_DEGREES) {
-            hsv[0] = h.toFloat()
-            for (a in 0..AuracleMatrixSimulation.ALPHA_STEPS) {
-                val alphaByte = ((a.toFloat() / AuracleMatrixSimulation.ALPHA_STEPS) * 255f)
-                    .roundToInt()
-                    .coerceIn(0, 255)
-                cache[h * alphaCount + a] = Color.HSVToColor(alphaByte, hsv)
-            }
-        }
-        return cache
-    }
-
     private class GlyphAtlas(
         val bitmap: Bitmap,
         val srcRects: Array<Rect>,
@@ -177,5 +163,28 @@ internal class AuracleMatrixRenderer(
     companion object {
         private const val BASE_FONT_SIZE_DP: Float = 10f
         private const val ATLAS_MARGIN_PX: Int = 2
+
+        // Shared across Home, Lock, Preview, and Multi-Display engines (~30 KB total).
+        private val COLOR_CACHE: IntArray by lazy(LazyThreadSafetyMode.PUBLICATION) {
+            buildColorCache()
+        }
+
+        private fun buildColorCache(): IntArray {
+            val alphaCount = AuracleMatrixSimulation.ALPHA_STEPS + 1
+            val cache = IntArray(AuracleMatrixSimulation.HUE_DEGREES * alphaCount)
+            val hsv = floatArrayOf(0f, 1f, 1f)
+
+            // hsla(h, 100%, 50%, a / 20.0) is equivalent to HSV(h, 1.0, 1.0) with alpha a / 20.0
+            for (h in 0 until AuracleMatrixSimulation.HUE_DEGREES) {
+                hsv[0] = h.toFloat()
+                for (a in 0..AuracleMatrixSimulation.ALPHA_STEPS) {
+                    val alphaByte = ((a.toFloat() / AuracleMatrixSimulation.ALPHA_STEPS) * 255f)
+                        .roundToInt()
+                        .coerceIn(0, 255)
+                    cache[h * alphaCount + a] = Color.HSVToColor(alphaByte, hsv)
+                }
+            }
+            return cache
+        }
     }
 }

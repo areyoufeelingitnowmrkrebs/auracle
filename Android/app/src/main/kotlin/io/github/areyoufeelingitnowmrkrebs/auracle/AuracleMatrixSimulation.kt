@@ -99,11 +99,15 @@ internal class AuracleMatrixSimulation(
     ) {
         if (totalCells == 0) return
 
-        val clampedDt = if (dtMillis > 500f || dtMillis < 0f) 16f else dtMillis
+        val clampedDt = if (!dtMillis.isFinite() || dtMillis > 500f || dtMillis < 0f) {
+            16f
+        } else {
+            dtMillis
+        }
         val timeScale = clampedDt / 100f
 
         hue = (hue + 3f * timeScale) % HUE_DEGREES
-        val globalHueInt = hue.toInt()
+        val globalHueInt = hue.toInt().coerceIn(0, HUE_DEGREES - 1)
         val charLen = CHARACTER_STRINGS.size
 
         for (x in 0 until columns) {
