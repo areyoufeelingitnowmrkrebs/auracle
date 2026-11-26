@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
     <title>Auracle</title>
     <style>
         html, body {
@@ -11,156 +12,431 @@
             width: 100%;
             height: 100%;
             overflow: hidden;
-            background-color: black;
+            background-color: #000000;
+            user-select: none;
+            -webkit-user-select: none;
         }
         canvas {
             display: block;
             width: 100vw;
             height: 100vh;
+            pointer-events: none;
         }
     </style>
 </head>
 <body>
     <canvas id="c"></canvas>
     <script>
-        const canvas = document.getElementById('c');
-        const ctx = canvas.getContext('2d', { alpha: false });
-        const settings = {
-            minSpeed: 0.5,
-            maxSpeed: 2.0,
-            decayRate: 0.05
-        };
-        let hue = 0;
-        let fontSize = 14;
+        "use strict";
+
+        const canvas = document.getElementById("c");
+        const ctx = canvas.getContext("2d", { alpha: false });
+
+        const FONT_SIZE = 14;
+        const MIN_SPEED = 0.5;
+        const MAX_SPEED = 2.0;
+        const SPEED_RANGE_INV = 1.0 / (MAX_SPEED - MIN_SPEED);
+        // Tuned between legacy flat 0.05 (~10 min cells) and Android portrait 0.025 (~20 min cells).
+        const MIN_DECAY_RATE = 0.035;
+        const MAX_DECAY_RATE = 0.05;
+        const DECAY_SPAN = MAX_DECAY_RATE - MIN_DECAY_RATE;
+        const HUE_DEGREES = 360;
+        const HUE_BUCKETS = 8;
+        const ALPHA_STEPS = 20;
+        // Below 1/ALPHA_STEPS, (a * ALPHA_STEPS) | 0 === 0 (fully transparent); cull immediately.
+        const MIN_VISIBLE_ALPHA = 0.05;
+        const RANDOM_LUT_SIZE = 16384;
+        const RANDOM_LUT_MASK = 16383;
+
+        const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&()=+[]{}/<>?ЯИГДЖЗЙЛПФЦЧШЩЪЫЬЭЮァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶヷヸヹヺーヽヾヿㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ";
+        const CHARACTERS = ALPHABET.split("");
+        const CHAR_LEN = CHARACTERS.length;
+
+        const colorCache = new Array(HUE_DEGREES * ALPHA_STEPS);
+        const randomLUT = new Float32Array(RANDOM_LUT_SIZE);
+        const bucketHeads = new Int32Array(HUE_BUCKETS * ALPHA_STEPS);
+        let randomIdx = 0;
+
+        let width = 0;
+        let height = 0;
+        let dpr = 0;
         let columns = 0;
         let rows = 0;
         let totalCells = 0;
-        let drops;
-        let speeds;
-        let accumulators;
-        let alphas;
-        let charIndices;
-        let targetHues;
-        let xPixels;
-        let yPixels;
-        let colorCache = [];
-        let randomLUT;
-        let randomIdx = 0;
-        const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&()=+[]{}/<>?ЯИГДЖЗЙЛПФЦЧШЩЪЫЬЭЮァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶヷヸヹヺーヽヾヿㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ";
-        const characters = alphabet.split("");
-        let lastTime = Date.now();
-        let width, height;
+        let activeCount = 0;
+        let hue = 0.0;
+
+        let drops = null;
+        let speeds = null;
+        let columnDecayRates = null;
+        let accumulators = null;
+
+        let alphas = null;
+        let cellDecayRates = null;
+        let charIndices = null;
+        let hueBuckets = null;
+        let xPixels = null;
+        let yPixels = null;
+
+        let activeCells = null;
+        let isActive = null;
+        let nextInBucket = null;
+
+        let livelyPaused = false;
+        let rafId = 0;
+        let lastTimestamp = 0;
+        let dprMediaQuery = null;
+
+        function byteHex(n) {
+            return (n < 16 ? "0" : "") + n.toString(16);
+        }
+
+        function initStaticResources() {
+            // Pre-format #rrggbbaa hex strings so Blink skips CSS hsla() tokenization and float HSL->RGB conversion.
+            // hsla(h, 100%, 50%, a) === HSV(h, 1, 1) with alpha a.
+            for (let h = 0; h < HUE_DEGREES; h++) {
+                const sector = h / 60.0;
+                const sectorIdx = sector | 0;
+                const f = sector - sectorIdx;
+                let r = 0, g = 0, b = 0;
+
+                switch (sectorIdx) {
+                    case 0: r = 1; g = f; b = 0; break;
+                    case 1: r = 1 - f; g = 1; b = 0; break;
+                    case 2: r = 0; g = 1; b = f; break;
+                    case 3: r = 0; g = 1 - f; b = 1; break;
+                    case 4: r = f; g = 0; b = 1; break;
+                    default: r = 1; g = 0; b = 1 - f; break;
+                }
+
+                const rgbHex = "#"
+                    + byteHex(Math.round(r * 255))
+                    + byteHex(Math.round(g * 255))
+                    + byteHex(Math.round(b * 255));
+                const base = h * ALPHA_STEPS;
+
+                for (let a = 1; a <= ALPHA_STEPS; a++) {
+                    colorCache[base + (a - 1)] = rgbHex + byteHex(Math.round((a / ALPHA_STEPS) * 255));
+                }
+            }
+
+            // Float32 rounds >= (1 - 2^-25) up to 1.0; clamp to max float32 < 1.0 so (r * CHAR_LEN) | 0 never hits CHAR_LEN.
+            const maxBelowOne = 0.99999994;
+            for (let i = 0; i < RANDOM_LUT_SIZE; i++) {
+                const r = Math.random();
+                randomLUT[i] = r < maxBelowOne ? r : maxBelowOne;
+            }
+        }
+
         function fastRandom() {
-            randomIdx = (randomIdx + 1) % 10000;
+            randomIdx = (randomIdx + 1) & RANDOM_LUT_MASK;
             return randomLUT[randomIdx];
         }
+
         function getSpeed() {
-            if (fastRandom() < 0.10) return 2.0;
-            return fastRandom() * (1.2 - 0.6) + 0.5;
+            if (fastRandom() < 0.10) {
+                return MAX_SPEED;
+            }
+            return fastRandom() * 0.6 + MIN_SPEED;
         }
-        function initCache() {
-            colorCache = new Array(7560);
-            for(let h = 0; h < 360; h++) {
-                for(let a = 0; a <= 20; a++) {
-                    colorCache[h * 21 + a] = `hsla(${h}, 100%, 50%, ${a / 20.0})`;
+
+        function decayRateForSpeed(speed) {
+            let t = (speed - MIN_SPEED) * SPEED_RANGE_INV;
+            if (t < 0.0) {
+                t = 0.0;
+            } else if (t > 1.0) {
+                t = 1.0;
+            }
+            return MIN_DECAY_RATE + t * DECAY_SPAN;
+        }
+
+        function applyContextState() {
+            if (!ctx || dpr <= 0) {
+                return;
+            }
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.font = FONT_SIZE + "px monospace";
+            ctx.textBaseline = "top";
+        }
+
+        function shouldRun() {
+            return !livelyPaused && !document.hidden && totalCells > 0 && ctx !== null;
+        }
+
+        function syncRunState() {
+            if (shouldRun()) {
+                if (rafId === 0) {
+                    lastTimestamp = 0;
+                    rafId = requestAnimationFrame(render);
                 }
+            } else if (rafId !== 0) {
+                cancelAnimationFrame(rafId);
+                rafId = 0;
+                lastTimestamp = 0;
             }
         }
-        function initMatrix() {
-            width = window.innerWidth;
-            height = window.innerHeight;
-            canvas.width = width;
-            canvas.height = height;
-            if (width === 0 || height === 0) return;
-            randomLUT = new Float32Array(10000);
-            for(let i = 0; i < 10000; i++) {
-                randomLUT[i] = Math.random();
+
+        function watchDevicePixelRatio() {
+            if (!window.matchMedia) {
+                return;
             }
-            randomIdx = 0;
-            columns = Math.ceil(width / fontSize) | 0;
-            rows = Math.ceil(height / fontSize) | 0;
+            if (dprMediaQuery) {
+                dprMediaQuery.removeEventListener("change", onDprChanged);
+            }
+            dprMediaQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+            dprMediaQuery.addEventListener("change", onDprChanged, { once: true });
+        }
+
+        function onDprChanged() {
+            watchDevicePixelRatio();
+            initMatrix();
+        }
+
+        function initMatrix() {
+            const nextWidth = window.innerWidth | 0;
+            const nextHeight = window.innerHeight | 0;
+            const nextDpr = Math.max(1, window.devicePixelRatio || 1);
+
+            if (nextWidth <= 0 || nextHeight <= 0) {
+                width = 0;
+                height = 0;
+                dpr = nextDpr;
+                columns = 0;
+                rows = 0;
+                totalCells = 0;
+                activeCount = 0;
+                syncRunState();
+                return;
+            }
+
+            if (nextWidth === width && nextHeight === height && nextDpr === dpr) {
+                return;
+            }
+
+            width = nextWidth;
+            height = nextHeight;
+            dpr = nextDpr;
+
+            canvas.width = Math.max(1, Math.round(width * dpr));
+            canvas.height = Math.max(1, Math.round(height * dpr));
+            applyContextState();
+
+            columns = Math.ceil(width / FONT_SIZE) | 0;
+            rows = Math.ceil(height / FONT_SIZE) | 0;
             totalCells = columns * rows;
+            activeCount = 0;
+
             drops = new Int32Array(columns);
             speeds = new Float32Array(columns);
+            columnDecayRates = new Float32Array(columns);
             accumulators = new Float32Array(columns);
+
             alphas = new Float32Array(totalCells);
-            charIndices = new Uint16Array(totalCells);
-            targetHues = new Uint16Array(totalCells);
-            xPixels = new Uint16Array(totalCells);
-            yPixels = new Uint16Array(totalCells);
+            cellDecayRates = new Float32Array(totalCells);
+            charIndices = new Uint8Array(totalCells);
+            // (x * 45 + y * 45) % 360 === ((x + y) & 7) * 45; only 8 distinct diagonal hue offsets exist.
+            hueBuckets = new Uint8Array(totalCells);
+            xPixels = new Float32Array(totalCells);
+            yPixels = new Float32Array(totalCells);
+
+            activeCells = new Int32Array(totalCells);
+            isActive = new Uint8Array(totalCells);
+            nextInBucket = new Int32Array(totalCells);
+
             for (let i = 0; i < totalCells; i++) {
-                let x = i % columns;
-                let y = (i / columns) | 0;
-                alphas[i] = 0.0;
-                charIndices[i] = 0;
-                targetHues[i] = (x * 45 + y * 45) % 360;
-                xPixels[i] = x * fontSize;
-                yPixels[i] = y * fontSize;
+                const x = i % columns;
+                const y = (i / columns) | 0;
+                cellDecayRates[i] = MAX_DECAY_RATE;
+                hueBuckets[i] = (x + y) & 7;
+                xPixels[i] = x * FONT_SIZE;
+                yPixels[i] = y * FONT_SIZE;
             }
+
             for (let x = 0; x < columns; x++) {
                 drops[x] = (fastRandom() * -rows) | 0;
-                speeds[x] = getSpeed();
-                accumulators[x] = 0.0;
+                const spd = getSpeed();
+                speeds[x] = spd;
+                columnDecayRates[x] = decayRateForSpeed(spd);
             }
-            lastTime = Date.now();
+
+            drawStep(16.0);
+            syncRunState();
         }
-        function render() {
-            requestAnimationFrame(render);
-            let currentTime = Date.now();
-            let dt = currentTime - lastTime;
-            lastTime = currentTime;
-            if (dt > 500) dt = 16;
-            let timeScale = dt / 100.0;
-            let decayStep = settings.decayRate * timeScale;
-            ctx.fillStyle = "black";
+
+        function drawStep(dtMillis) {
+            if (!ctx || totalCells === 0) {
+                return;
+            }
+
+            let dt = dtMillis;
+            if (!(dt >= 0.0) || !Number.isFinite(dt) || dt > 500.0) {
+                dt = 16.0;
+            }
+            const timeScale = dt / 100.0;
+
+            ctx.fillStyle = "#000000";
             ctx.fillRect(0, 0, width, height);
-            ctx.font = fontSize + "px monospace";
-            ctx.textBaseline = "top";
-            hue = (hue + 3 * timeScale) % 360;
-            let globalHueInt = hue | 0;
-            let charLen = characters.length;
-            for (let x = 0; x < columns; x++) {
-                accumulators[x] += speeds[x] * timeScale;
-                while (accumulators[x] >= 1.0) {
-                    drops[x]++;
-                    let yIndex = drops[x];
-                    if (yIndex >= 0 && yIndex < rows) {
-                        let cellIndex = yIndex * columns + x;
-                        charIndices[cellIndex] = (fastRandom() * charLen) | 0;
-                        alphas[cellIndex] = 1.0;
-                    }
-                    if (yIndex > rows && fastRandom() > 0.99) {
-                        drops[x] = -1;
-                        speeds[x] = getSpeed();
-                    }
-                    accumulators[x]--;
-                }
+
+            let nextHue = (hue + 3.0 * timeScale) % 360.0;
+            if (nextHue < 0.0) {
+                nextHue += 360.0;
             }
-            let lastStyle = null;
-            for (let i = 0; i < totalCells; i++) {
-                let a = alphas[i];
-                if (a > 0.01) {
-                    let currentHue = targetHues[i] + globalHueInt;
-                    if (currentHue >= 360) currentHue -= 360;
-                    let alphaIndex = (a * 20.0) | 0;
-                    if (alphaIndex > 20) alphaIndex = 20;
-                    let cacheIndex = currentHue * 21 + alphaIndex;
-                    let nextStyle = colorCache[cacheIndex];
-                    if (nextStyle !== lastStyle) {
-                        ctx.fillStyle = nextStyle;
-                        lastStyle = nextStyle;
+            hue = nextHue;
+            const globalHueInt = nextHue | 0;
+
+            let rIdx = randomIdx;
+
+            if (timeScale > 0.0) {
+                for (let x = 0; x < columns; x++) {
+                    accumulators[x] += speeds[x] * timeScale;
+                    while (accumulators[x] >= 1.0) {
+                        const yIndex = ++drops[x];
+
+                        if (yIndex >= 0 && yIndex < rows) {
+                            const cellIndex = yIndex * columns + x;
+                            rIdx = (rIdx + 1) & RANDOM_LUT_MASK;
+                            charIndices[cellIndex] = (randomLUT[rIdx] * CHAR_LEN) | 0;
+                            alphas[cellIndex] = 1.0;
+                            // Latch column decay onto cell so respawning the column doesn't alter existing trail fade.
+                            cellDecayRates[cellIndex] = columnDecayRates[x];
+                            if (isActive[cellIndex] === 0) {
+                                isActive[cellIndex] = 1;
+                                activeCells[activeCount++] = cellIndex;
+                            }
+                        }
+
+                        if (yIndex > rows) {
+                            rIdx = (rIdx + 1) & RANDOM_LUT_MASK;
+                            if (randomLUT[rIdx] > 0.99) {
+                                drops[x] = -1;
+                                rIdx = (rIdx + 1) & RANDOM_LUT_MASK;
+                                let nextSpeed;
+                                if (randomLUT[rIdx] < 0.10) {
+                                    nextSpeed = MAX_SPEED;
+                                } else {
+                                    rIdx = (rIdx + 1) & RANDOM_LUT_MASK;
+                                    nextSpeed = randomLUT[rIdx] * 0.6 + MIN_SPEED;
+                                }
+                                speeds[x] = nextSpeed;
+                                let t = (nextSpeed - MIN_SPEED) * SPEED_RANGE_INV;
+                                if (t < 0.0) {
+                                    t = 0.0;
+                                } else if (t > 1.0) {
+                                    t = 1.0;
+                                }
+                                columnDecayRates[x] = MIN_DECAY_RATE + t * DECAY_SPAN;
+                            }
+                        }
+
+                        accumulators[x] -= 1.0;
                     }
-                    ctx.fillText(characters[charIndices[i]], xPixels[i], yPixels[i]);
-                    alphas[i] = a - decayStep;
-                } else if (a > 0.0) {
-                    alphas[i] = 0.0;
+                }
+                randomIdx = rIdx;
+            }
+
+            if (activeCount === 0) {
+                return;
+            }
+
+            bucketHeads.fill(-1);
+            let anyVisible = false;
+            let i = 0;
+
+            while (i < activeCount) {
+                const cellIndex = activeCells[i];
+                const a = alphas[cellIndex];
+                let alphaIndex = (a * 20.0) | 0;
+                if (alphaIndex > 20) {
+                    alphaIndex = 20;
+                }
+
+                if (alphaIndex > 0) {
+                    const bucket = hueBuckets[cellIndex] * 20 + (alphaIndex - 1);
+                    nextInBucket[cellIndex] = bucketHeads[bucket];
+                    bucketHeads[bucket] = cellIndex;
+                    anyVisible = true;
+
+                    const nextAlpha = a - cellDecayRates[cellIndex] * timeScale;
+                    if (nextAlpha >= MIN_VISIBLE_ALPHA) {
+                        alphas[cellIndex] = nextAlpha;
+                        i++;
+                        continue;
+                    }
+                }
+
+                alphas[cellIndex] = 0.0;
+                isActive[cellIndex] = 0;
+                activeCells[i] = activeCells[--activeCount];
+            }
+
+            if (!anyVisible) {
+                return;
+            }
+
+            // Batching by (hueBucket, alphaSlot) caps ctx.fillStyle changes at <= 160/frame instead of per-cell.
+            for (let hBucket = 0; hBucket < 8; hBucket++) {
+                let hueDeg = globalHueInt + hBucket * 45;
+                if (hueDeg >= 360) {
+                    hueDeg -= 360;
+                }
+                const colorBase = hueDeg * 20;
+                const bucketBase = hBucket * 20;
+
+                for (let aSlot = 0; aSlot < 20; aSlot++) {
+                    let cellIndex = bucketHeads[bucketBase + aSlot];
+                    if (cellIndex === -1) {
+                        continue;
+                    }
+
+                    ctx.fillStyle = colorCache[colorBase + aSlot];
+                    do {
+                        ctx.fillText(CHARACTERS[charIndices[cellIndex]], xPixels[cellIndex], yPixels[cellIndex]);
+                        cellIndex = nextInBucket[cellIndex];
+                    } while (cellIndex !== -1);
                 }
             }
         }
-        window.addEventListener('resize', initMatrix);
-        initCache();
+
+        function render(timestamp) {
+            rafId = 0;
+            if (!shouldRun()) {
+                return;
+            }
+
+            const dt = lastTimestamp === 0 ? 16.0 : timestamp - lastTimestamp;
+            lastTimestamp = timestamp;
+
+            drawStep(dt);
+
+            if (shouldRun() && rafId === 0) {
+                rafId = requestAnimationFrame(render);
+            }
+        }
+
+        // Lively only invokes this when LivelyInfo.json sets "Arguments": "--pause-event true"; WebView2 JS keeps ticking otherwise.
+        window.livelyWallpaperPlaybackChanged = function(data) {
+            try {
+                const payload = typeof data === "string" ? JSON.parse(data) : data;
+                if (payload && typeof payload.IsPaused === "boolean") {
+                    livelyPaused = payload.IsPaused;
+                    syncRunState();
+                }
+            } catch (_) {
+                // Ignore malformed host payloads across Lively versions.
+            }
+        };
+
+        document.addEventListener("visibilitychange", syncRunState);
+        window.addEventListener("resize", initMatrix);
+        // WDDM driver resets / sleep-wake GPU context recovery.
+        canvas.addEventListener("contextrestored", () => {
+            applyContextState();
+            drawStep(0.0);
+        });
+
+        initStaticResources();
+        watchDevicePixelRatio();
         initMatrix();
-        requestAnimationFrame(render);
     </script>
 </body>
 </html>
